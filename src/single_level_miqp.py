@@ -3,16 +3,31 @@ from gurobipy import GRB
 import gurobipy as gp
 import pandas as pd
 import numpy as np
+import operator
 import time 
 
 
 class SingleLevelMIQP(object):
 
-    def __init__(self, instance):
+    def __init__(self, instance, iteration_no=None, cut_pair_ls=None):
+
+        """
+        instance: Instance object
+        iteration_no: integer, iteration of the cutting plane algorithm. If there is not 
+                               cutting plane algorithm taking place, it equals to None
+        cut_pair_ls: list of tuples, [(a,j)] pairs, If there is not 
+                                     cutting plane algorithm taking place, it equals to None
+        """
         
         self.ins_ = instance
-        self.model = gp.Model("SingleLevelMIQP")
+        self.cuts = cut_pair_ls
 
+        if iteration_no is None:
+            self.model = gp.Model("SingleLevelMIQP")
+        else:
+            temp_name = 'iteration_' + str(iteration_no)
+            self.model = gp.Model(temp_name)
+        
         if params.flag == False:
             self.model.setParam('OutputFlag', 0)
 
@@ -58,14 +73,26 @@ class SingleLevelMIQP(object):
     
     def add_disjunctions(self):
         
-        counter = 0
-        for a in self.arcs:
-            for j in self.pairs:
-                temp_name_x = "disjunction_x_" + str(counter)
-                temp_name_lambda = "disjunction_lambda_" + str(counter)
-                self.model.addConstr(self.X[a, j] <= 1000000 * self.Xi[a,j], temp_name_x)
-                self.model.addConstr(self.Lambda[a,j] <= 1000000 * (1 - self.Xi[a,j]), temp_name_lambda)
-                counter +=1
+        # if no cutting plane algorithm is taking place
+
+        if self.cuts is None:
+            counter = 0
+            for a in self.arcs:
+                for j in self.pairs:
+                    dem_j = self.ins_.commodities[j][-1]
+                    temp_name_x = "disjunction_x_" + str(counter)
+                    temp_name_lambda = "disjunction_lambda_" + str(counter)
+                    self.model.addConstr(self.X[a, j] <= dem_j * self.Xi[a,j], temp_name_x)
+                    self.model.addConstr(self.Lambda[a,j] <= params.max_toll * (1 - self.Xi[a,j]), temp_name_lambda)
+                    counter +=1
+        
+        # if cutting plane takes place, use the existing cuts
+        else:
+            if len(self.cuts) > 0:
+                for a,j in self.cuts:
+                    dem_j = self.ins_.commodities[j][-1]
+                    self.model.addConstr(self.X[a, j] <= dem_j * self.Xi[a,j])
+                    self.model.addConstr(self.Lambda[a, j] <= params.max_toll * (1 - self.Xi[a,j]))
 
     def add_equilibrium_conditions(self):
         
@@ -148,3 +175,13 @@ class SingleLevelMIQP(object):
 
             # Close the Pandas Excel writer and output the Excel file.
             writer.save()
+
+    def get_most_violated_disjunction(self):
+            
+        # call it after you solve the model
+        violation_dict = {(a,j): self.X[a,j].X * self.Lambda[a,j].X for a in self.arcs for j in self.pairs}
+
+        # returns key and value, respectively
+        max_pair = max(violation_dict.items(), key=operator.itemgetter(1))[0]
+        max_val = violation_dict[max_pair]
+        return max_pair, max_val
